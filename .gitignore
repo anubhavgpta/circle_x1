@@ -1,0 +1,50 @@
+# Vivado generated files
+.Xil/
+*.jou
+*.log
+*.str
+*.wdb
+*.wcfg
+*.pb
+*.dcp
+*.bit
+*.ltx
+*.rpt
+*.runs/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.sim/
+
+# XSim output
+xsim.dir/
+*.vcd
+*.saif
+webtalk*.log
+webtalk*.jou
+xvlog.pb
+xelab.pb
+xsim*.jou
+xsim*.log
+
+# Build and temporary output
+build/
+dist/
+out/
+tmp/
+temp/
+
+# Python/cache artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+Thumbs.db
+Desktop.ini
+.DS_Store
