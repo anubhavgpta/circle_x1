@@ -4,6 +4,8 @@
 // Resolves session/token addresses through the block table and performs
 // scatter-gather SRAM reads and writes across physical pages.  The SRAM data
 // word stores K and V together as {K, V}; read outputs split the same layout.
+//
+// Array ports eliminated (flat ports only for xsim compatibility).
 
 module rw_engine #(
     parameter NUM_SESSIONS     = 8,
@@ -41,12 +43,18 @@ module rw_engine #(
     input      [7:0]  bt_rd_physical_page,
     input             bt_rd_valid,
 
-    // SRAM interface.  Each physical page maps to one bank.
+    // SRAM interface -- flat ports (one per bank, no array ports)
     output reg [SRAM_BANKS-1:0] sram_ce,
     output reg [SRAM_BANKS-1:0] sram_we,
-    output reg [7:0]  sram_addr [SRAM_BANKS-1:0],
+    output reg [7:0]  sram_addr_0,
+    output reg [7:0]  sram_addr_1,
+    output reg [7:0]  sram_addr_2,
+    output reg [7:0]  sram_addr_3,
     output reg [DATA_WIDTH*HEAD_DIM*2-1:0] sram_wdata,
-    input      [DATA_WIDTH*HEAD_DIM*2-1:0] sram_rdata [SRAM_BANKS-1:0]
+    input      [DATA_WIDTH*HEAD_DIM*2-1:0] sram_rdata_0,
+    input      [DATA_WIDTH*HEAD_DIM*2-1:0] sram_rdata_1,
+    input      [DATA_WIDTH*HEAD_DIM*2-1:0] sram_rdata_2,
+    input      [DATA_WIDTH*HEAD_DIM*2-1:0] sram_rdata_3
 );
 
     localparam KV_WIDTH = DATA_WIDTH * HEAD_DIM;
@@ -85,7 +93,11 @@ module rw_engine #(
                            ((state == ST_WR_LOOKUP) ? wr_offset_hold :
                                                       rd_page_offset);
 
-    integer i;
+    // Flat mux to select the active bank rdata
+    wire [SRAM_WIDTH-1:0] sram_rdata_sel =
+        (active_bank == 2'd0) ? sram_rdata_0 :
+        (active_bank == 2'd1) ? sram_rdata_1 :
+        (active_bank == 2'd2) ? sram_rdata_2 : sram_rdata_3;
 
     always @(*) begin
         bt_rd_session = active_session;
@@ -120,6 +132,10 @@ module rw_engine #(
             sram_ce            <= {SRAM_BANKS{1'b0}};
             sram_we            <= {SRAM_BANKS{1'b0}};
             sram_wdata         <= {SRAM_WIDTH{1'b0}};
+            sram_addr_0        <= 8'd0;
+            sram_addr_1        <= 8'd0;
+            sram_addr_2        <= 8'd0;
+            sram_addr_3        <= 8'd0;
             cur_token          <= 12'd0;
             end_token          <= 12'd0;
             active_session     <= 3'd0;
@@ -132,8 +148,6 @@ module rw_engine #(
             active_bank        <= 2'd0;
             active_addr        <= 8'd0;
             sram_waited        <= 1'b0;
-            for (i = 0; i < SRAM_BANKS; i = i + 1)
-                sram_addr[i] <= 8'd0;
         end else begin
             wr_ack   <= 1'b0;
             rd_valid <= 1'b0;
@@ -165,7 +179,12 @@ module rw_engine #(
                         active_phys_page <= bt_rd_physical_page;
                         active_bank      <= phys_bank;
                         active_addr      <= phys_addr;
-                        sram_addr[phys_bank] <= phys_addr;
+                        case (phys_bank)
+                            2'd0: sram_addr_0 <= phys_addr;
+                            2'd1: sram_addr_1 <= phys_addr;
+                            2'd2: sram_addr_2 <= phys_addr;
+                            2'd3: sram_addr_3 <= phys_addr;
+                        endcase
                         state            <= ST_WR_SRAM;
                     end
                 end
@@ -173,7 +192,12 @@ module rw_engine #(
                 ST_WR_SRAM: begin
                     sram_ce[active_bank] <= 1'b1;
                     sram_we[active_bank] <= 1'b1;
-                    sram_addr[active_bank] <= active_addr;
+                    case (active_bank)
+                        2'd0: sram_addr_0 <= active_addr;
+                        2'd1: sram_addr_1 <= active_addr;
+                        2'd2: sram_addr_2 <= active_addr;
+                        2'd3: sram_addr_3 <= active_addr;
+                    endcase
                     sram_wdata <= {wr_k_hold, wr_v_hold};
                     state <= ST_WR_ACK;
                 end
@@ -189,7 +213,12 @@ module rw_engine #(
                         active_phys_page <= bt_rd_physical_page;
                         active_bank      <= phys_bank;
                         active_addr      <= phys_addr;
-                        sram_addr[phys_bank] <= phys_addr;
+                        case (phys_bank)
+                            2'd0: sram_addr_0 <= phys_addr;
+                            2'd1: sram_addr_1 <= phys_addr;
+                            2'd2: sram_addr_2 <= phys_addr;
+                            2'd3: sram_addr_3 <= phys_addr;
+                        endcase
                         sram_waited     <= 1'b0;
                         state            <= ST_RD_SRAM;
                     end
@@ -198,7 +227,12 @@ module rw_engine #(
                 ST_RD_SRAM: begin
                     rd_busy <= 1'b1;
                     sram_ce[active_bank] <= 1'b1;
-                    sram_addr[active_bank] <= active_addr;
+                    case (active_bank)
+                        2'd0: sram_addr_0 <= active_addr;
+                        2'd1: sram_addr_1 <= active_addr;
+                        2'd2: sram_addr_2 <= active_addr;
+                        2'd3: sram_addr_3 <= active_addr;
+                    endcase
                     if (sram_waited)
                         state <= ST_RD_OUTPUT;
                     else
@@ -209,8 +243,8 @@ module rw_engine #(
                     rd_busy  <= 1'b1;
                     rd_valid <= 1'b1;
                     rd_last  <= (cur_token == end_token);
-                    rd_k_data <= sram_rdata[active_bank][SRAM_WIDTH-1:KV_WIDTH];
-                    rd_v_data <= sram_rdata[active_bank][KV_WIDTH-1:0];
+                    rd_k_data <= sram_rdata_sel[SRAM_WIDTH-1:KV_WIDTH];
+                    rd_v_data <= sram_rdata_sel[KV_WIDTH-1:0];
 
                     if (cur_token == end_token) begin
                         rd_busy <= 1'b0;

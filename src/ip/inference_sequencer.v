@@ -1,5 +1,6 @@
 // inference_sequencer.v
 // Circle AIS -- Layer 2 speculative inference top-level sequencer.
+`timescale 1ns/1ps
 
 module inference_sequencer (
     input  wire        clk,
@@ -57,6 +58,7 @@ module inference_sequencer (
     output wire [2:0]  kael_session_id,
     output wire [15:0] kael_token_start,
     output wire [15:0] kael_token_end,
+    output wire [15:0] kael_token_pos,
     output wire        attn_start,
     input  wire        attn_done,
     input  wire        attn_busy,
@@ -154,7 +156,9 @@ module inference_sequencer (
         .verify_start    (verify_start),
         .session_id      (session_reg),
         .token_start     (kv_tail),
-        .token_end       (kv_tail - 16'd1),
+        // BUG FIX 5: token_end is inclusive tail, not tail-1
+        .token_end       (kv_tail),
+        .token_pos       (kv_tail),
         .batch_size      (spec_k_reg + 3'd1),
         .cand_q_data     (cand_q_data),
         .cand_q_addr     (cand_q_addr),
@@ -169,6 +173,7 @@ module inference_sequencer (
         .kael_session_id (kael_session_id),
         .kael_token_start(kael_token_start),
         .kael_token_end  (kael_token_end),
+        .kael_token_pos  (kael_token_pos),
         .attn_start      (attn_start),
         .attn_done       (attn_done),
         .attn_busy       (attn_busy),
@@ -283,6 +288,7 @@ module inference_sequencer (
                 end
 
                 S_PREFILL: begin
+                    $display("[SEQ %0t] PREFILL: firing spec_start/verify_start/arb_start, spec_k=%0d", $time, spec_k_reg);
                     spec_start   <= 1'b1;
                     verify_start <= 1'b1;
                     arb_start    <= 1'b1;
@@ -293,12 +299,14 @@ module inference_sequencer (
 
                 S_SPEC_DRAFT: begin
                     if (cand_done) begin
+                        $display("[SEQ %0t] cand_done seen, moving to S_VERIFY", $time);
                         ais_state <= S_VERIFY;
                     end
                 end
 
                 S_VERIFY: begin
                     if (verify_done) begin
+                        $display("[SEQ %0t] verify_done seen, moving to S_ARBITRATE", $time);
                         ais_state <= S_ARBITRATE;
                     end
                 end
@@ -319,7 +327,7 @@ module inference_sequencer (
                         if (!rollback_needed)
                             kv_tail <= kv_tail + {13'd0, accepted_count};
 
-                        if (((tokens_generated + {13'd0, accepted_count}) >= max_new_reg) ||
+                        if (((tokens_generated + {13'd0, accepted_count} + 16'd1) >= max_new_reg) ||
                             (next_token_id == 16'hFFFF)) begin
                             ais_state <= S_DONE;
                         end else begin

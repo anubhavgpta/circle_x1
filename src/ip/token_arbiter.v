@@ -1,11 +1,15 @@
 // token_arbiter.v
 // Circle AIS Layer 2 -- speculative draft token acceptance/rejection
+`timescale 1ns/1ps
 // Greedy argmax over HEAD_DIM=64 context vector words streamed from Kael.
 // Tie-breaking: lowest index wins (first maximum seen is kept).
 
+// BUG FIX 4: argmax must be over vocab logits, not HEAD_DIM context words
 module token_arbiter #(
     parameter HEAD_DIM       = 64,
-    parameter MAX_CANDIDATES = 7
+    parameter MAX_CANDIDATES = 7,
+    parameter VOCAB_SIZE     = 32000,
+    parameter VOCAB_WIDTH    = 15    // ceil(log2(VOCAB_SIZE))
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -30,6 +34,10 @@ module token_arbiter #(
     input  wire [15:0] draft_token_id_5,
     input  wire [15:0] draft_token_id_6,
     input  wire [15:0] target_token_id,
+
+    // LM head argmax result -- TODO: wire from GEMM engine when built;
+    // for now caller drives the winning token index directly
+    input  wire [VOCAB_WIDTH-1:0] linear_logits,
 
     // Rollback base
     input  wire [15:0] token_base_pos,
@@ -60,19 +68,19 @@ module token_arbiter #(
     reg [2:0]  k_reg;
     reg [2:0]  cur_batch_id;
 
-    // Mux: select draft_token_id[i][5:0] by batch_id
-    function [5:0] get_draft_low6;
+    // Mux: select draft_token_id[i][VOCAB_WIDTH-1:0] by batch_id
+    function [14:0] get_draft_token;
         input [2:0] idx;
         begin
             case (idx)
-                3'd0: get_draft_low6 = draft_token_id_0[5:0];
-                3'd1: get_draft_low6 = draft_token_id_1[5:0];
-                3'd2: get_draft_low6 = draft_token_id_2[5:0];
-                3'd3: get_draft_low6 = draft_token_id_3[5:0];
-                3'd4: get_draft_low6 = draft_token_id_4[5:0];
-                3'd5: get_draft_low6 = draft_token_id_5[5:0];
-                3'd6: get_draft_low6 = draft_token_id_6[5:0];
-                default: get_draft_low6 = 6'd0;
+                3'd0: get_draft_token = draft_token_id_0[14:0];
+                3'd1: get_draft_token = draft_token_id_1[14:0];
+                3'd2: get_draft_token = draft_token_id_2[14:0];
+                3'd3: get_draft_token = draft_token_id_3[14:0];
+                3'd4: get_draft_token = draft_token_id_4[14:0];
+                3'd5: get_draft_token = draft_token_id_5[14:0];
+                3'd6: get_draft_token = draft_token_id_6[14:0];
+                default: get_draft_token = 15'd0;
             endcase
         end
     endfunction
@@ -146,7 +154,7 @@ module token_arbiter #(
                         rollback_token_pos <= token_base_pos + {13'd0, k_reg};
                         state              <= DONE;
                     end else begin
-                        if (max_idx != get_draft_low6(cur_batch_id)) begin
+                        if (linear_logits != get_draft_token(cur_batch_id)) begin
                             // Mismatch at candidate cur_batch_id
                             accepted_count     <= cur_batch_id;
                             rollback_needed    <= 1'b1;

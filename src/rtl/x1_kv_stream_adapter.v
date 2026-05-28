@@ -49,11 +49,17 @@ module x1_kv_stream_adapter (
             commit_kv_valid   <= 1'b1;
             scan_idx          <= s_axis_kv_token_idx[2:0] + 3'd1;
         end else begin
-            commit_k_data    <= k_buf[scan_idx];
-            commit_v_data    <= v_buf[scan_idx];
-            commit_token_idx <= scan_idx;
-            commit_kv_valid  <= valid_buf[scan_idx];
-            scan_idx         <= scan_idx + 3'd1;
+            // BUG FIX 3: clear valid bit after use so each entry replays exactly once
+            if (valid_buf[scan_idx]) begin
+                commit_k_data       <= k_buf[scan_idx];
+                commit_v_data       <= v_buf[scan_idx];
+                commit_token_idx    <= scan_idx;
+                commit_kv_valid     <= 1'b1;
+                valid_buf[scan_idx] <= 1'b0;
+            end else begin
+                commit_kv_valid <= 1'b0;
+            end
+            scan_idx <= scan_idx + 3'd1;
         end
     end
 

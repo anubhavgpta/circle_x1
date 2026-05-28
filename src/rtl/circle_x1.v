@@ -54,7 +54,27 @@ module circle_x1 #(
     input  wire        m_axis_token_tready,
 
     // Interrupt
-    output wire        intr
+    output wire        intr,
+
+    // Debug
+    output wire        dbg_rd_busy_seen,
+
+    // DMA host interface
+    input  wire                            dma_start,
+    input  wire [31:0]                     dma_src_addr,
+    input  wire [1:0]                      dma_dst_sel,
+    input  wire [14:0]                     dma_dst_addr,
+    input  wire [9:0]                      dma_length,
+    input  wire                            dram_valid,
+    input  wire [DATA_WIDTH*HEAD_DIM-1:0]  dram_data,
+    output wire                            dram_ready,
+    output wire                            dma_done,
+    // Sampling parameters
+    input  wire [2:0]                      temp_shift,
+    input  wire [15:0]                     p_threshold,
+    // Sampled token output
+    output wire                            samp_valid,
+    output wire [14:0]                     samp_token
 );
 
     // ----------------------------------------------------------------
@@ -68,16 +88,29 @@ module circle_x1 #(
     wire [15:0] reg_target_token_id;
     wire [15:0] reg_draft_0, reg_draft_1, reg_draft_2, reg_draft_3;
     wire [15:0] reg_draft_4, reg_draft_5, reg_draft_6;
+    wire [DATA_WIDTH*HEAD_DIM-1:0] reg_gamma;
 
     // ----------------------------------------------------------------
     // Internal wires: AIS (inference_sequencer) outputs
     // ----------------------------------------------------------------
-    wire        wr_req;
-    wire [2:0]  wr_session_id;
-    wire [15:0] wr_token_pos;
-    wire [15:0] wr_k_data;
-    wire [15:0] wr_v_data;
+    wire        ais_wr_req;
+    wire [2:0]  ais_wr_session_id;
+    wire [15:0] ais_wr_token_pos;
+    wire [15:0] ais_wr_k_data;
+    wire [15:0] ais_wr_v_data;
     wire        wr_ack;
+    reg         prefill_wr_req;
+    reg  [2:0]  prefill_wr_session_id;
+    reg  [15:0] prefill_wr_token_pos;
+    reg  [15:0] prefill_wr_k_data;
+    reg  [15:0] prefill_wr_v_data;
+    reg  [2:0]  prefill_count;
+    reg         kv_ready;
+    wire        vera_wr_req;
+    wire [2:0]  vera_wr_session_id;
+    wire [15:0] vera_wr_token_pos;
+    wire [15:0] vera_wr_k_data;
+    wire [15:0] vera_wr_v_data;
 
     wire        ais_evict_valid;
     wire [7:0]  ais_evict_page_id;
@@ -91,6 +124,7 @@ module circle_x1 #(
     wire [2:0]  kael_session_id;
     wire [15:0] kael_token_start;
     wire [15:0] kael_token_end;
+    wire [15:0] kael_token_pos;
     wire        attn_start;
     wire        attn_done;
     wire        attn_busy;
@@ -138,6 +172,56 @@ module circle_x1 #(
     wire [15:0] commit_v_data;
     wire [2:0]  commit_token_idx;
     wire        commit_kv_valid;
+
+    // ----------------------------------------------------------------
+    // Internal wires: new modules
+    // ----------------------------------------------------------------
+    wire                             emb_wr_en;
+    wire [14:0]                      emb_wr_addr;
+    wire [DATA_WIDTH*HEAD_DIM-1:0]   emb_wr_data;
+    wire                             lm_wr_en;
+    wire [14:0]                      lm_wr_col;
+    wire [DATA_WIDTH*HEAD_DIM-1:0]   lm_wr_data;
+    wire                             ffn_wr_en;
+    wire [1:0]                       ffn_b_wr_sel;
+    wire [6:0]                       ffn_b_wr_col;
+    wire [DATA_WIDTH*HEAD_DIM-1:0]   ffn_wr_data;
+    wire                             gam_wr_en;
+    wire [4:0]                       gam_wr_addr;
+    wire [31:0]                      gam_wr_data;
+
+    wire [DATA_WIDTH*HEAD_DIM-1:0]   emb_vec_out;
+    wire                             emb_valid_out;
+
+    wire                             lm_logit_valid;
+    wire                             lm_logit_last;
+    wire [DATA_WIDTH*HEAD_DIM-1:0]   lm_logit_data;
+
+    wire                             samp_valid_out;
+    wire [14:0]                      samp_token_id;
+
+    wire                             lc_valid_out;
+    wire [DATA_WIDTH*HEAD_DIM-1:0]   lc_vec_out;
+    wire                             lc_attn_start;
+    wire [DATA_WIDTH*HEAD_DIM-1:0]   lc_attn_vec;
+
+    wire                             mh_valid_out;
+    wire [DATA_WIDTH*HEAD_DIM*8-1:0] mh_vec_out;
+    wire                             mh_attn_start;
+    wire [DATA_WIDTH*HEAD_DIM-1:0]   mh_attn_q;
+
+    // attn_out stub: no accumulated wide output from u_kael exists
+    wire [DATA_WIDTH*HEAD_DIM-1:0]   attn_out_wire;
+    assign attn_out_wire = {(DATA_WIDTH*HEAD_DIM){1'b0}};
+
+    // gamma_word_array: unpack reg_gamma into 32 x 32-bit words for layer_ctrl
+    wire [31:0] gamma_word_array [0:31];
+    genvar gi;
+    generate
+        for (gi = 0; gi < 32; gi = gi + 1) begin : gen_gamma_words
+            assign gamma_word_array[gi] = reg_gamma[gi*32 +: 32];
+        end
+    endgenerate
 
     // ----------------------------------------------------------------
     // Vera AXI4-Lite bus (x1_reg_ctrl master <-> vera slave)
@@ -213,14 +297,50 @@ module circle_x1 #(
         .draft_token_id_4 (reg_draft_4),
         .draft_token_id_5 (reg_draft_5),
         .draft_token_id_6 (reg_draft_6),
+        .gamma_out        (reg_gamma),
         // AIS status inputs
         .infer_busy       (infer_busy),
         .infer_done       (infer_done),
         .ais_state        (ais_state),
         .generated_token  (generated_token),
         .token_valid      (token_valid),
+        .kv_ready         (kv_ready),
         .intr             (intr)
     );
+
+    assign vera_wr_req        = infer_busy ? ais_wr_req        : (prefill_wr_req & !wr_ack);
+    assign vera_wr_session_id = infer_busy ? ais_wr_session_id : prefill_wr_session_id;
+    assign vera_wr_token_pos  = infer_busy ? ais_wr_token_pos  : prefill_wr_token_pos;
+    assign vera_wr_k_data     = infer_busy ? ais_wr_k_data     : prefill_wr_k_data;
+    assign vera_wr_v_data     = infer_busy ? ais_wr_v_data     : prefill_wr_v_data;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            prefill_wr_req        <= 1'b0;
+            prefill_wr_session_id <= 3'd0;
+            prefill_wr_token_pos  <= 16'd0;
+            prefill_wr_k_data     <= 16'd0;
+            prefill_wr_v_data     <= 16'd0;
+            prefill_count         <= 3'd0;
+            kv_ready              <= 1'b0;
+        end else if (!infer_busy) begin
+            if (prefill_wr_req) begin
+                if (wr_ack) begin
+                    prefill_wr_req <= 1'b0;
+                    prefill_count  <= prefill_count + 3'd1;
+                    if (prefill_count == 3'd3)
+                        kv_ready <= 1'b1;
+                end
+            end else if (commit_kv_valid) begin
+                prefill_wr_req        <= 1'b1;
+                prefill_wr_session_id <= reg_session_id;
+                prefill_wr_token_pos  <= {13'd0, commit_token_idx};
+                prefill_wr_k_data     <= commit_k_data;
+                prefill_wr_v_data     <= commit_v_data;
+                kv_ready              <= 1'b0;
+            end
+        end
+    end
 
     // ----------------------------------------------------------------
     // u_ais: AIS inference sequencer
@@ -249,11 +369,11 @@ module circle_x1 #(
         .commit_v_data    (commit_v_data),
         .commit_token_idx (commit_token_idx),
         .commit_kv_valid  (commit_kv_valid),
-        .wr_req           (wr_req),
-        .wr_session_id    (wr_session_id),
-        .wr_token_pos     (wr_token_pos),
-        .wr_k_data        (wr_k_data),
-        .wr_v_data        (wr_v_data),
+        .wr_req           (ais_wr_req),
+        .wr_session_id    (ais_wr_session_id),
+        .wr_token_pos     (ais_wr_token_pos),
+        .wr_k_data        (ais_wr_k_data),
+        .wr_v_data        (ais_wr_v_data),
         .wr_ack           (wr_ack),
         .evict_valid      (ais_evict_valid),
         .evict_page_id    (ais_evict_page_id),
@@ -267,6 +387,7 @@ module circle_x1 #(
         .kael_session_id  (kael_session_id),
         .kael_token_start (kael_token_start),
         .kael_token_end   (kael_token_end),
+        .kael_token_pos   (kael_token_pos),
         .attn_start       (attn_start),
         .attn_done        (attn_done),
         .attn_busy        (attn_busy),
@@ -300,6 +421,9 @@ module circle_x1 #(
         .session_id   (kael_session_id),
         .token_start  (kael_token_start),
         .token_end    (kael_token_end),
+        .token_pos    (kael_token_pos),
+        .gamma_in     (reg_gamma),
+        .residual_vec ({(DATA_WIDTH*HEAD_DIM){1'b0}}),
         .attn_start   (attn_start),
         .rd_req       (kael_rd_req),
         .rd_session_id(kael_rd_session_id),
@@ -315,16 +439,18 @@ module circle_x1 #(
         .ctx_valid    (ctx_valid),
         .ctx_last     (ctx_last),
         .attn_done    (attn_done),
-        .attn_busy    (attn_busy)
+        .attn_busy    (attn_busy),
+        .dbg_rd_busy_seen(dbg_rd_busy_seen)
     );
 
     // ----------------------------------------------------------------
     // u_vera: Vera KV cache (HEAD_DIM=1 for 16-bit KV buses)
     // ----------------------------------------------------------------
+    // BUG FIX 1: pass HEAD_DIM parameter correctly instead of hardcoded 1
     kv_cache_ctrl #(
         .TOTAL_PAGES     (TOTAL_PAGES),
         .PAGE_SIZE_TOKENS(PAGE_SIZE_TOKENS),
-        .HEAD_DIM        (1),
+        .HEAD_DIM        (HEAD_DIM),
         .NUM_SESSIONS    (NUM_SESSIONS),
         .DATA_WIDTH      (DATA_WIDTH),
         .SRAM_BANKS      (SRAM_BANKS)
@@ -351,11 +477,11 @@ module circle_x1 #(
         .s_axi_rresp    (vera_s_rresp),
         .irq            (vera_irq),
         // KV write from AIS
-        .wr_req         (wr_req),
-        .wr_session_id  (wr_session_id),
-        .wr_token_pos   (wr_token_pos[11:0]),
-        .wr_k_data      (wr_k_data),
-        .wr_v_data      (wr_v_data),
+        .wr_req         (vera_wr_req),
+        .wr_session_id  (vera_wr_session_id),
+        .wr_token_pos   (vera_wr_token_pos[11:0]),
+        .wr_k_data      (vera_wr_k_data),
+        .wr_v_data      (vera_wr_v_data),
         .wr_ack         (wr_ack),
         // KV read from Kael
         .rd_req         (kael_rd_req),
@@ -420,6 +546,91 @@ module circle_x1 #(
         .m_axis_token_tvalid(m_axis_token_tvalid),
         .m_axis_token_tready(m_axis_token_tready),
         .tok_overflow       ()
+    );
+
+    // ----------------------------------------------------------------
+    // u_dma: DMA engine
+    // ----------------------------------------------------------------
+    dma_engine u_dma (
+        .clk(clk), .rst_n(rst_n),
+        .src_addr(dma_src_addr), .dst_sel(dma_dst_sel),
+        .dst_addr(dma_dst_addr), .length(dma_length),
+        .start(dma_start), .done(dma_done),
+        .dram_valid(dram_valid), .dram_data(dram_data), .dram_ready(dram_ready),
+        .emb_wr_en(emb_wr_en), .emb_wr_addr(emb_wr_addr), .emb_wr_data(emb_wr_data),
+        .lm_wr_en(lm_wr_en),   .lm_wr_col(lm_wr_col),   .lm_wr_data(lm_wr_data),
+        .ffn_wr_en(ffn_wr_en), .ffn_b_wr_sel(ffn_b_wr_sel),
+        .ffn_b_wr_col(ffn_b_wr_col), .ffn_wr_data(ffn_wr_data),
+        .gam_wr_en(gam_wr_en), .gam_wr_addr(gam_wr_addr), .gam_wr_data(gam_wr_data)
+    );
+
+    // ----------------------------------------------------------------
+    // u_embedding: Embedding lookup table
+    // ----------------------------------------------------------------
+    embedding_lut #(.VOCAB_SIZE(32000),.HEAD_DIM(HEAD_DIM),.DATA_WIDTH(DATA_WIDTH))
+    u_embedding (
+        .clk(clk), .rst_n(rst_n),
+        .wr_en(emb_wr_en), .wr_addr(emb_wr_addr), .wr_data(emb_wr_data),
+        .rd_en(1'b0), .rd_addr(15'd0),
+        .valid_out(emb_valid_out), .emb_out(emb_vec_out)
+    );
+
+    // ----------------------------------------------------------------
+    // u_lm_head: LM head projection
+    // ----------------------------------------------------------------
+    lm_head #(.VOCAB_SIZE(32000),.HEAD_DIM(HEAD_DIM),.DATA_WIDTH(DATA_WIDTH))
+    u_lm_head (
+        .clk(clk), .rst_n(rst_n),
+        .wr_en(lm_wr_en), .wr_col(lm_wr_col), .wr_data(lm_wr_data),
+        .start(lc_valid_out),
+        .hidden_vec(lc_vec_out),
+        .logit_valid(lm_logit_valid), .logit_last(lm_logit_last),
+        .logit_data(lm_logit_data)
+    );
+
+    // ----------------------------------------------------------------
+    // u_sampling: Sampling engine
+    // ----------------------------------------------------------------
+    sampling_engine #(.VOCAB_SIZE(32000),.HEAD_DIM(HEAD_DIM),.DATA_WIDTH(DATA_WIDTH))
+    u_sampling (
+        .clk(clk), .rst_n(rst_n),
+        .start(lc_valid_out),
+        .logit_valid(lm_logit_valid), .logit_last(lm_logit_last),
+        .logit_data(lm_logit_data),
+        .temp_shift(temp_shift), .p_threshold(p_threshold),
+        .valid_out(samp_valid_out), .token_id(samp_token_id)
+    );
+
+    assign samp_valid = samp_valid_out;
+    assign samp_token = samp_token_id;
+
+    // ----------------------------------------------------------------
+    // u_layer_ctrl: Transformer layer stack
+    // ----------------------------------------------------------------
+    layer_ctrl #(.NUM_LAYERS(4),.HEAD_DIM(HEAD_DIM),.DATA_WIDTH(DATA_WIDTH))
+    u_layer_ctrl (
+        .clk(clk), .rst_n(rst_n),
+        .start(infer_start),
+        .vec_in(emb_vec_out),
+        .attn_start(lc_attn_start), .attn_vec(lc_attn_vec),
+        .attn_done(mh_valid_out),   .attn_out(mh_vec_out[DATA_WIDTH*HEAD_DIM-1:0]),
+        .b_wr_en(ffn_wr_en), .b_wr_sel(ffn_b_wr_sel),
+        .b_wr_col(ffn_b_wr_col), .b_wr_data(ffn_wr_data),
+        .gamma_word(gamma_word_array),
+        .valid_out(lc_valid_out), .vec_out(lc_vec_out)
+    );
+
+    // ----------------------------------------------------------------
+    // u_multihead: Multi-head attention dispatcher
+    // ----------------------------------------------------------------
+    multihead_ctrl #(.NUM_HEADS(8),.HEAD_DIM(HEAD_DIM),.DATA_WIDTH(DATA_WIDTH))
+    u_multihead (
+        .clk(clk), .rst_n(rst_n),
+        .start(lc_attn_start),
+        .vec_in({8{lc_attn_vec}}),
+        .attn_start(mh_attn_start), .attn_q(mh_attn_q),
+        .attn_done(attn_done),  .attn_out(attn_out_wire),
+        .valid_out(mh_valid_out), .vec_out(mh_vec_out)
     );
 
 endmodule

@@ -3,6 +3,8 @@
 //
 // Snoops rw_engine read requests, detects per-session page-boundary
 // sequential access, and requests prefetches into a two-entry buffer.
+//
+// Array ports eliminated (flat ports only for xsim compatibility).
 
 module prefetch_ctrl #(
     parameter NUM_SESSIONS     = 8,
@@ -22,10 +24,13 @@ module prefetch_ctrl #(
     output reg       pf_req,
     input            pf_ack,
 
-    // Two-entry prefetch buffer status
-    output reg       pf_buf_valid [1:0],
-    output reg [4:0] pf_buf_page  [1:0],
-    output reg [2:0] pf_buf_sess  [1:0]
+    // Two-entry prefetch buffer status -- flat ports (no array ports)
+    output reg       pf_buf_valid_0,
+    output reg       pf_buf_valid_1,
+    output reg [4:0] pf_buf_page_0,
+    output reg [4:0] pf_buf_page_1,
+    output reg [2:0] pf_buf_sess_0,
+    output reg [2:0] pf_buf_sess_1
 );
 
     localparam ST_IDLE     = 2'd0;
@@ -34,7 +39,7 @@ module prefetch_ctrl #(
     reg [1:0] state;
     reg [4:0] last_page [0:NUM_SESSIONS-1];
     reg       seen_req  [0:NUM_SESSIONS-1];
-    reg       buf_age   [1:0];
+    reg       buf_age_0, buf_age_1;
     reg [2:0] pend_session;
     reg [4:0] pend_page;
 
@@ -45,29 +50,36 @@ module prefetch_ctrl #(
         (obs_page == (last_page[obs_session_id] + 1'b1));
 
     integer i;
-    integer fill_idx;
 
+    // Fill buffer entry 0 or 1 (fill_slot=0 or 1)
     task fill_buffer;
         input [2:0] sess;
         input [4:0] page;
+        reg fill_slot;
         begin
-            if (!pf_buf_valid[0])
-                fill_idx = 0;
-            else if (!pf_buf_valid[1])
-                fill_idx = 1;
-            else if (buf_age[0] == 1'b0)
-                fill_idx = 0;
+            // LRU: pick empty slot first, else evict oldest
+            if (!pf_buf_valid_0)
+                fill_slot = 1'b0;
+            else if (!pf_buf_valid_1)
+                fill_slot = 1'b1;
+            else if (buf_age_0 == 1'b0)
+                fill_slot = 1'b0;
             else
-                fill_idx = 1;
+                fill_slot = 1'b1;
 
-            pf_buf_valid[fill_idx] <= 1'b1;
-            pf_buf_page[fill_idx]  <= page;
-            pf_buf_sess[fill_idx]  <= sess;
-            buf_age[fill_idx]      <= 1'b1;
-            if (fill_idx == 0)
-                buf_age[1] <= 1'b0;
-            else
-                buf_age[0] <= 1'b0;
+            if (fill_slot == 1'b0) begin
+                pf_buf_valid_0 <= 1'b1;
+                pf_buf_page_0  <= page;
+                pf_buf_sess_0  <= sess;
+                buf_age_0      <= 1'b1;
+                buf_age_1      <= 1'b0;
+            end else begin
+                pf_buf_valid_1 <= 1'b1;
+                pf_buf_page_1  <= page;
+                pf_buf_sess_1  <= sess;
+                buf_age_1      <= 1'b1;
+                buf_age_0      <= 1'b0;
+            end
         end
     endtask
 
@@ -79,15 +91,17 @@ module prefetch_ctrl #(
             pf_req          <= 1'b0;
             pend_session    <= 3'd0;
             pend_page       <= 5'd0;
+            pf_buf_valid_0  <= 1'b0;
+            pf_buf_valid_1  <= 1'b0;
+            pf_buf_page_0   <= 5'd0;
+            pf_buf_page_1   <= 5'd0;
+            pf_buf_sess_0   <= 3'd0;
+            pf_buf_sess_1   <= 3'd0;
+            buf_age_0       <= 1'b0;
+            buf_age_1       <= 1'b0;
             for (i = 0; i < NUM_SESSIONS; i = i + 1) begin
                 last_page[i] <= 5'd0;
                 seen_req[i]  <= 1'b0;
-            end
-            for (i = 0; i < 2; i = i + 1) begin
-                pf_buf_valid[i] <= 1'b0;
-                pf_buf_page[i]  <= 5'd0;
-                pf_buf_sess[i]  <= 3'd0;
-                buf_age[i]      <= 1'b0;
             end
         end else begin
             pf_req <= 1'b0;

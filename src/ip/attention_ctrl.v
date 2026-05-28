@@ -1,3 +1,4 @@
+`timescale 1ns/1ps
 // -----------------------------------------------------------------------
 // Module : attention_ctrl
 // Project: Kael -- Attention Accelerator (Circle Inference Silicon IP)
@@ -15,6 +16,9 @@ module attention_ctrl #(
     input  logic [2:0]  batch_size,
     input  logic [2:0]  session_id,
     input  logic [15:0] token_start, token_end,
+    input  logic [15:0] token_pos,
+    input  logic [DATA_WIDTH*HEAD_DIM-1:0] gamma_in,
+    input  logic [DATA_WIDTH*HEAD_DIM-1:0] residual_vec,
     input  logic        attn_start,
     output logic        rd_req,
     output logic [2:0]  rd_session_id,
@@ -24,13 +28,14 @@ module attention_ctrl #(
     output logic [15:0] ctx_out,
     output logic [2:0]  ctx_batch_id,
     output logic        ctx_valid, ctx_last,
-    output logic        attn_done, attn_busy
+    output logic        attn_done, attn_busy,
+    output logic        dbg_rd_busy_seen
 );
 
     localparam BATCH_BITS = 3;
     localparam IDX_BITS   = 6;
 
-    typedef enum logic [2:0] {IDLE, FETCH_KV, K_START, STREAM, OUTPUT} state_t;
+    typedef enum logic [2:0] {IDLE, K_PRENORM, K_RESIDADD, FETCH_KV, K_START, STREAM, OUTPUT} state_t;
 
     state_t state;
 
@@ -41,6 +46,8 @@ module attention_ctrl #(
     logic need_kstart;
     logic stream_done;
     logic rd_busy_seen;
+    logic [6:0] fetch_timeout_cnt;
+    logic [9:0] stream_timeout_cnt;
 
     logic seq_start_pulse;
     logic k_start_pulse;
@@ -76,14 +83,64 @@ module attention_ctrl #(
     logic        weight_rd_buf[0:MAX_BATCH-1];
     logic [15:0] weight_count [0:MAX_BATCH-1];
     logic [31:0] weight_sum   [0:MAX_BATCH-1];
+    logic [15:0] q_buf        [0:MAX_BATCH-1][0:HEAD_DIM-1];
     logic [15:0] token_count_reg;
     logic [BATCH_BITS-1:0] out_batch;
     logic [IDX_BITS-1:0] out_idx;
+    logic [BATCH_BITS-1:0] norm_batch;
+    logic [IDX_BITS-1:0] norm_idx;
+    logic prenorm_started;
+    logic rms_valid_in;
+    logic rms_valid_out;
+    logic resid_valid_out;
+    logic norm_replay_valid;
+    logic [15:0] norm_replay_data;
+    logic [5:0] norm_replay_addr;
+    logic [2:0] norm_replay_batch;
+    logic [15:0] dot_q_data;
+    logic [5:0] dot_q_addr;
+    logic [2:0] dot_q_batch_id;
+    logic dot_q_valid;
+    logic [DATA_WIDTH*HEAD_DIM-1:0] raw_q_vec;
+    logic [DATA_WIDTH*HEAD_DIM-1:0] rms_vec_out;
+    logic [DATA_WIDTH*HEAD_DIM-1:0] resid_vec_out;
 
     logic any_stall;
     logic all_done;
     logic active_b [0:MAX_BATCH-1];
     logic [63:0] norm_calc;
+    integer comb_j;
+    integer seq_b;
+
+    assign dbg_rd_busy_seen = rd_busy_seen;
+    assign dot_q_data     = norm_replay_data;
+    assign dot_q_addr     = norm_replay_addr;
+    assign dot_q_batch_id = norm_replay_batch;
+    assign dot_q_valid    = norm_replay_valid;
+
+    rmsnorm_engine #(
+        .HEAD_DIM(HEAD_DIM),
+        .DATA_WIDTH(DATA_WIDTH)
+    ) u_rmsnorm (
+        .clk(clk),
+        .rst_n(rst_n),
+        .vec_in(raw_q_vec),
+        .scale_in(gamma_in),
+        .valid_in(rms_valid_in),
+        .vec_out(rms_vec_out),
+        .valid_out(rms_valid_out)
+    );
+
+    residual_adder #(
+        .HEAD_DIM(HEAD_DIM),
+        .DATA_WIDTH(DATA_WIDTH)
+    ) u_resid (
+        .valid_in(rms_valid_out),
+        .vec_a(rms_vec_out),
+        .vec_b(residual_vec),
+        .valid_out(resid_valid_out),
+        .vec_out(resid_vec_out)
+    );
 
     genvar b;
     generate
@@ -99,14 +156,15 @@ module attention_ctrl #(
             ) u_dot (
                 .clk(clk),
                 .rst_n(rst_n),
-                .q_data(q_data),
-                .q_valid(q_valid),
-                .q_addr(q_addr),
-                .q_batch_id(q_batch_id),
+                .q_data(dot_q_data),
+                .q_valid(dot_q_valid),
+                .q_addr(dot_q_addr),
+                .q_batch_id(dot_q_batch_id),
                 .k_data(rd_k_data),
                 .k_valid(k_valid_pulse && active_b[b]),
                 .k_start(k_start_pulse && active_b[b]),
                 .k_batch_id(b[2:0]),
+                .token_pos(token_pos),
                 .dot_result(dot_result_b[b]),
                 .dot_valid(dot_valid_b[b])
             );
@@ -181,6 +239,9 @@ module attention_ctrl #(
                 all_done = all_done & ctx_done[comb_i];
             end
         end
+        raw_q_vec = '0;
+        for (comb_j = 0; comb_j < HEAD_DIM; comb_j = comb_j + 1)
+            raw_q_vec[(comb_j*DATA_WIDTH) +: DATA_WIDTH] = q_buf[norm_batch][comb_j];
         if (weight_sum[out_batch] != 32'd0) begin
             norm_calc = ({32'd0, ctx_calc[out_batch][out_idx]} << 15) / weight_sum[out_batch];
         end else begin
@@ -198,7 +259,9 @@ module attention_ctrl #(
             elem_idx <= {IDX_BITS{1'b0}};
             need_kstart <= 1'b0;
             stream_done <= 1'b0;
-            rd_busy_seen <= 1'b0;
+            rd_busy_seen       <= 1'b0;
+            fetch_timeout_cnt  <= 7'd0;
+            stream_timeout_cnt <= 10'd0;
             seq_start_pulse <= 1'b0;
             k_start_pulse <= 1'b0;
             k_valid_pulse <= 1'b0;
@@ -220,6 +283,14 @@ module attention_ctrl #(
             attn_busy <= 1'b0;
             out_batch <= {BATCH_BITS{1'b0}};
             out_idx <= {IDX_BITS{1'b0}};
+            norm_batch <= {BATCH_BITS{1'b0}};
+            norm_idx <= {IDX_BITS{1'b0}};
+            prenorm_started <= 1'b0;
+            rms_valid_in <= 1'b0;
+            norm_replay_valid <= 1'b0;
+            norm_replay_data <= 16'd0;
+            norm_replay_addr <= 6'd0;
+            norm_replay_batch <= 3'd0;
             v_wr_buf <= 1'b0;
             token_count_reg <= 16'd0;
             for (seq_i = 0; seq_i < MAX_BATCH; seq_i = seq_i + 1) begin
@@ -230,6 +301,7 @@ module attention_ctrl #(
                 weight_sum[seq_i] <= 32'd0;
                 for (seq_j = 0; seq_j < HEAD_DIM; seq_j = seq_j + 1) begin
                     ctx_calc[seq_i][seq_j] <= 32'd0;
+                    q_buf[seq_i][seq_j] <= 16'd0;
                 end
             end
         end else begin
@@ -241,6 +313,11 @@ module attention_ctrl #(
             ctx_valid <= 1'b0;
             ctx_last <= 1'b0;
             attn_done <= 1'b0;
+            rms_valid_in <= 1'b0;
+            norm_replay_valid <= 1'b0;
+
+            if (q_valid)
+                q_buf[q_batch_id][q_addr] <= q_data;
 
             dot_last_d1 <= dot_valid_b[0] && dot_last_pending;
             score_last_d1 <= dot_last_d1;
@@ -307,7 +384,45 @@ module attention_ctrl #(
                                 ctx_calc[seq_i][seq_j] <= 32'd0;
                             end
                         end
-                        state <= FETCH_KV;
+                        fetch_timeout_cnt  <= 7'd0;
+                        stream_timeout_cnt <= 10'd0;
+                        norm_batch         <= {BATCH_BITS{1'b0}};
+                        norm_idx           <= {IDX_BITS{1'b0}};
+                        prenorm_started    <= 1'b0;
+                        state              <= K_PRENORM;
+                    end
+                end
+
+                K_PRENORM: begin
+                    attn_busy <= 1'b1;
+                    rd_req <= 1'b0;
+                    if (!prenorm_started) begin
+                        rms_valid_in <= 1'b1;
+                        prenorm_started <= 1'b1;
+                    end else if (resid_valid_out) begin
+                        norm_idx <= {IDX_BITS{1'b0}};
+                        state <= K_RESIDADD;
+                    end
+                end
+
+                K_RESIDADD: begin
+                    attn_busy <= 1'b1;
+                    rd_req <= 1'b0;
+                    norm_replay_valid <= 1'b1;
+                    norm_replay_data <= resid_vec_out[norm_idx*DATA_WIDTH +: DATA_WIDTH];
+                    norm_replay_addr <= norm_idx;
+                    norm_replay_batch <= norm_batch;
+                    if (norm_idx == HEAD_DIM[IDX_BITS-1:0] - 1'b1) begin
+                        norm_idx <= {IDX_BITS{1'b0}};
+                        prenorm_started <= 1'b0;
+                        if (norm_batch == active_batch[BATCH_BITS-1:0] - 1'b1) begin
+                            state <= FETCH_KV;
+                        end else begin
+                            norm_batch <= norm_batch + 1'b1;
+                            state <= K_PRENORM;
+                        end
+                    end else begin
+                        norm_idx <= norm_idx + 1'b1;
                     end
                 end
 
@@ -320,20 +435,33 @@ module attention_ctrl #(
                     if (rd_busy) begin
                         rd_busy_seen <= 1'b1;
                     end
-                    if (rd_busy_seen && rd_busy) begin
+                    // BUG FIX 2: transition when rd_busy falls, not while it is still high
+                    if (rd_busy_seen && !rd_busy) begin
+                        $display("[KAEL %0t] FETCH_KV->K_START: rd_busy_seen=%b rd_busy=%b cnt=%0d", $time, rd_busy_seen, rd_busy, fetch_timeout_cnt);
                         state <= K_START;
+                    end else if (fetch_timeout_cnt >= 7'd64) begin
+                        $display("[KAEL %0t] FETCH_KV timeout: rd_busy_seen=%b rd_busy=%b", $time, rd_busy_seen, rd_busy);
+                        rd_req    <= 1'b0;
+                        attn_done <= 1'b1;
+                        attn_busy <= 1'b0;
+                        state     <= IDLE;
+                    end else begin
+                        fetch_timeout_cnt <= fetch_timeout_cnt + 7'd1;
                     end
                 end
 
                 K_START: begin
-                    attn_busy <= 1'b1;
-                    rd_req <= 1'b0;
-                    k_start_pulse <= 1'b1;
-                    need_kstart <= 1'b0;
-                    state <= STREAM;
+                    attn_busy          <= 1'b1;
+                    rd_req             <= 1'b0;
+                    k_start_pulse      <= 1'b1;
+                    need_kstart        <= 1'b0;
+                    stream_timeout_cnt <= 10'd0;
+                    state              <= STREAM;
                 end
 
                 STREAM: begin
+                    if (stream_timeout_cnt == 7'd0)
+                        $display("[KAEL %0t] STREAM entry: stream_done=%b any_stall=%b all_done=%b need_kstart=%b", $time, stream_done, any_stall, all_done, need_kstart);
                     attn_busy <= 1'b1;
                     rd_req <= 1'b0;
 
@@ -349,6 +477,8 @@ module attention_ctrl #(
                                     v_seq_last <= 1'b1;
                                     stream_done <= 1'b1;
                                     dot_last_pending <= 1'b1;
+                                    for (seq_b = 0; seq_b < MAX_BATCH; seq_b = seq_b + 1)
+                                        if (seq_b < active_batch) ctx_done[seq_b] <= 1'b1;
                                 end
                                 if (elem_idx == HEAD_DIM[IDX_BITS-1:0] - 1'b1) begin
                                     elem_idx <= {IDX_BITS{1'b0}};
@@ -368,6 +498,8 @@ module attention_ctrl #(
                                 v_seq_last <= 1'b1;
                                 stream_done <= 1'b1;
                                 dot_last_pending <= 1'b1;
+                                for (seq_b = 0; seq_b < MAX_BATCH; seq_b = seq_b + 1)
+                                    if (seq_b < active_batch) ctx_done[seq_b] <= 1'b1;
                             end
                             if (elem_idx == HEAD_DIM[IDX_BITS-1:0] - 1'b1) begin
                                 elem_idx <= {IDX_BITS{1'b0}};
@@ -382,9 +514,31 @@ module attention_ctrl #(
                     end
 
                     if (stream_done && all_done) begin
+                        $display("[KAEL %0t] STREAM->OUTPUT", $time);
                         out_batch <= {BATCH_BITS{1'b0}};
                         out_idx <= {IDX_BITS{1'b0}};
                         state <= OUTPUT;
+                    end else if (!stream_done) begin
+                        if (rd_valid) begin
+                            stream_timeout_cnt <= 10'd0;
+                        end else if (stream_timeout_cnt >= 10'd64) begin
+                            $display("[KAEL %0t] STREAM timeout (no rd_valid)", $time);
+                            attn_done <= 1'b1;
+                            attn_busy <= 1'b0;
+                            state     <= IDLE;
+                        end else begin
+                            stream_timeout_cnt <= stream_timeout_cnt + 10'd1;
+                        end
+                    end else begin
+                        // safety: should not fire -- ctx_done set with stream_done
+                        if (stream_timeout_cnt >= 10'd960) begin
+                            $display("[KAEL %0t] WARNING: STREAM safety timeout fired - all_done never asserted", $time);
+                            attn_done <= 1'b1;
+                            attn_busy <= 1'b0;
+                            state     <= IDLE;
+                        end else begin
+                            stream_timeout_cnt <= stream_timeout_cnt + 10'd1;
+                        end
                     end
                 end
 

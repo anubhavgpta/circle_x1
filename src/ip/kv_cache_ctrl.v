@@ -96,13 +96,13 @@ module kv_cache_ctrl #(
 
     reg rw_wr_req;
     wire rw_wr_ack;
-    wire rw_rd_req = global_enable & rd_req;
+    wire rw_rd_req = rd_req;
 
     wire [SRAM_BANKS-1:0] sram_ce;
     wire [SRAM_BANKS-1:0] sram_we;
-    wire [7:0] sram_addr [SRAM_BANKS-1:0];
+    wire [7:0]         sram_addr_0, sram_addr_1, sram_addr_2, sram_addr_3;
     wire [SRAM_WIDTH-1:0] sram_wdata;
-    reg  [SRAM_WIDTH-1:0] sram_rdata [SRAM_BANKS-1:0];
+    reg  [SRAM_WIDTH-1:0] sram_rdata_0, sram_rdata_1, sram_rdata_2, sram_rdata_3;
 
     (* ram_style = "block" *) reg [KV_WIDTH-1:0] sram_k_mem0 [0:511];
     (* ram_style = "block" *) reg [KV_WIDTH-1:0] sram_v_mem0 [0:511];
@@ -121,9 +121,14 @@ module kv_cache_ctrl #(
     reg pf_ack;
     wire [2:0] pf_session_id;
     wire [4:0] pf_logical_page;
-    wire pf_buf_valid [1:0];
-    wire [4:0] pf_buf_page [1:0];
-    wire [2:0] pf_buf_sess [1:0];
+    wire pf_buf_valid_0, pf_buf_valid_1;
+    wire [4:0] pf_buf_page_0, pf_buf_page_1;
+    wire [2:0] pf_buf_sess_0, pf_buf_sess_1;
+
+    // Eviction engine page-to-session lookup (flat, combinatorial)
+    wire [7:0] map_rd_page;
+    wire [2:0] map_rd_sess;
+    assign map_rd_sess = page_session_map[map_rd_page];
 
     reg [2:0] wr_state;
     reg [2:0] wr_sess_hold;
@@ -241,9 +246,15 @@ module kv_cache_ctrl #(
         .bt_rd_valid(bt_rd_valid),
         .sram_ce(sram_ce),
         .sram_we(sram_we),
-        .sram_addr(sram_addr),
+        .sram_addr_0(sram_addr_0),
+        .sram_addr_1(sram_addr_1),
+        .sram_addr_2(sram_addr_2),
+        .sram_addr_3(sram_addr_3),
         .sram_wdata(sram_wdata),
-        .sram_rdata(sram_rdata)
+        .sram_rdata_0(sram_rdata_0),
+        .sram_rdata_1(sram_rdata_1),
+        .sram_rdata_2(sram_rdata_2),
+        .sram_rdata_3(sram_rdata_3)
     );
 
     prefetch_ctrl #(
@@ -259,9 +270,12 @@ module kv_cache_ctrl #(
         .pf_logical_page(pf_logical_page),
         .pf_req(pf_req),
         .pf_ack(pf_ack),
-        .pf_buf_valid(pf_buf_valid),
-        .pf_buf_page(pf_buf_page),
-        .pf_buf_sess(pf_buf_sess)
+        .pf_buf_valid_0(pf_buf_valid_0),
+        .pf_buf_valid_1(pf_buf_valid_1),
+        .pf_buf_page_0(pf_buf_page_0),
+        .pf_buf_page_1(pf_buf_page_1),
+        .pf_buf_sess_0(pf_buf_sess_0),
+        .pf_buf_sess_1(pf_buf_sess_1)
     );
 
     eviction_engine #(
@@ -279,41 +293,42 @@ module kv_cache_ctrl #(
         .evict_ack(evict_ack),
         .free_req(evict_free_req),
         .free_page_id(evict_free_page_id),
-        .page_session_map(page_session_map)
+        .map_rd_page(map_rd_page),
+        .map_rd_sess(map_rd_sess)
     );
 
     always @(posedge clk) begin
         if (sram_ce[0]) begin
             if (sram_we[0]) begin
-                sram_k_mem0[sram_addr[0]] <= sram_wdata[SRAM_WIDTH-1:KV_WIDTH];
-                sram_v_mem0[sram_addr[0]] <= sram_wdata[KV_WIDTH-1:0];
+                sram_k_mem0[sram_addr_0] <= sram_wdata[SRAM_WIDTH-1:KV_WIDTH];
+                sram_v_mem0[sram_addr_0] <= sram_wdata[KV_WIDTH-1:0];
             end
-            sram_rdata[0] <= {sram_k_mem0[sram_addr[0]],
-                              sram_v_mem0[sram_addr[0]]};
+            sram_rdata_0 <= {sram_k_mem0[sram_addr_0],
+                             sram_v_mem0[sram_addr_0]};
         end
         if (sram_ce[1]) begin
             if (sram_we[1]) begin
-                sram_k_mem1[sram_addr[1]] <= sram_wdata[SRAM_WIDTH-1:KV_WIDTH];
-                sram_v_mem1[sram_addr[1]] <= sram_wdata[KV_WIDTH-1:0];
+                sram_k_mem1[sram_addr_1] <= sram_wdata[SRAM_WIDTH-1:KV_WIDTH];
+                sram_v_mem1[sram_addr_1] <= sram_wdata[KV_WIDTH-1:0];
             end
-            sram_rdata[1] <= {sram_k_mem1[sram_addr[1]],
-                              sram_v_mem1[sram_addr[1]]};
+            sram_rdata_1 <= {sram_k_mem1[sram_addr_1],
+                             sram_v_mem1[sram_addr_1]};
         end
         if (sram_ce[2]) begin
             if (sram_we[2]) begin
-                sram_k_mem2[sram_addr[2]] <= sram_wdata[SRAM_WIDTH-1:KV_WIDTH];
-                sram_v_mem2[sram_addr[2]] <= sram_wdata[KV_WIDTH-1:0];
+                sram_k_mem2[sram_addr_2] <= sram_wdata[SRAM_WIDTH-1:KV_WIDTH];
+                sram_v_mem2[sram_addr_2] <= sram_wdata[KV_WIDTH-1:0];
             end
-            sram_rdata[2] <= {sram_k_mem2[sram_addr[2]],
-                              sram_v_mem2[sram_addr[2]]};
+            sram_rdata_2 <= {sram_k_mem2[sram_addr_2],
+                             sram_v_mem2[sram_addr_2]};
         end
         if (sram_ce[3]) begin
             if (sram_we[3]) begin
-                sram_k_mem3[sram_addr[3]] <= sram_wdata[SRAM_WIDTH-1:KV_WIDTH];
-                sram_v_mem3[sram_addr[3]] <= sram_wdata[KV_WIDTH-1:0];
+                sram_k_mem3[sram_addr_3] <= sram_wdata[SRAM_WIDTH-1:KV_WIDTH];
+                sram_v_mem3[sram_addr_3] <= sram_wdata[KV_WIDTH-1:0];
             end
-            sram_rdata[3] <= {sram_k_mem3[sram_addr[3]],
-                              sram_v_mem3[sram_addr[3]]};
+            sram_rdata_3 <= {sram_k_mem3[sram_addr_3],
+                             sram_v_mem3[sram_addr_3]};
         end
     end
 
@@ -357,7 +372,7 @@ module kv_cache_ctrl #(
 
             case (wr_state)
                 WR_IDLE: begin
-                    if (global_enable && wr_req) begin
+                    if (wr_req) begin
                         wr_sess_hold    <= wr_session_id;
                         wr_token_hold   <= wr_token_pos;
                         wr_k_hold       <= wr_k_data;

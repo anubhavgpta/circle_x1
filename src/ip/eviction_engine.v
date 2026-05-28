@@ -31,8 +31,9 @@ module eviction_engine #(
     output reg       free_req,
     output reg [7:0] free_page_id,
 
-    // Reverse page-to-session map
-    input [2:0] page_session_map [255:0]
+    // Reverse page-to-session lookup (flat interface)
+    output [7:0] map_rd_page,
+    input  [2:0] map_rd_sess
 );
 
     localparam ST_IDLE         = 3'd0;
@@ -43,9 +44,12 @@ module eviction_engine #(
 
     reg [2:0] state;
     reg [7:0] access_count [0:TOTAL_PAGES-1];
+
     reg [7:0] scan_idx;
     reg [7:0] min_count;
     reg [7:0] min_page;
+
+    assign map_rd_page = min_page;
 
     integer i;
 
@@ -94,7 +98,7 @@ module eviction_engine #(
 
                 ST_EVICT_NOTIFY: begin
                     evict_page_id    <= min_page;
-                    evict_session_id <= page_session_map[min_page];
+                    evict_session_id <= map_rd_sess;
                     evict_valid      <= 1'b1;
                     state            <= ST_WAIT_ACK;
                 end

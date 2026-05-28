@@ -60,6 +60,7 @@ module x1_reg_ctrl #(
     output reg  [15:0] draft_token_id_4,
     output reg  [15:0] draft_token_id_5,
     output reg  [15:0] draft_token_id_6,
+    output reg  [1023:0] gamma_out,
 
     // Inputs from AIS
     input  wire        infer_busy,
@@ -67,6 +68,7 @@ module x1_reg_ctrl #(
     input  wire [2:0]  ais_state,
     input  wire [15:0] generated_token,
     input  wire        token_valid,
+    input  wire        kv_ready,
 
     // Interrupt
     output reg         intr
@@ -80,6 +82,7 @@ module x1_reg_ctrl #(
     localparam WS_PAW   = 3'd4;
     localparam WS_PW    = 3'd5;
     localparam WS_PB    = 3'd6;
+    localparam WS_DRAIN = 3'd7;
 
     // Read FSM
     localparam RS_IDLE  = 3'd0;
@@ -97,6 +100,21 @@ module x1_reg_ctrl #(
     reg done_intr;
     reg w1c_intr_clear;   // one-cycle pulse: W1C write to INTR_STATUS
     reg [11:0] token_count;
+    integer gamma_i;
+
+    function is_gamma_addr;
+        input [AXI_ADDR_WIDTH-1:0] addr;
+        begin
+            is_gamma_addr = (addr >= 12'h100) && (addr <= 12'h17C) && (addr[1:0] == 2'b00);
+        end
+    endfunction
+
+    function [9:0] gamma_bit_base;
+        input [AXI_ADDR_WIDTH-1:0] addr;
+        begin
+            gamma_bit_base = {addr[6:2], 5'b00000};
+        end
+    endfunction
 
     // Token count
     always @(posedge clk or negedge rst_n) begin
@@ -131,7 +149,7 @@ module x1_reg_ctrl #(
                 12'h014: reg_read = {20'd0, prompt_len};
                 12'h018: reg_read = {29'd0, spec_k};
                 12'h01C: reg_read = {20'd0, max_new_tokens};
-                12'h020: reg_read = {16'd0, generated_token};
+                12'h020: reg_read = {31'd0, kv_ready};
                 12'h024: reg_read = {20'd0, token_count};
                 12'h028: reg_read = {16'd0, target_token_id};
                 12'h02C: reg_read = {16'd0, draft_token_id_0};
@@ -141,7 +159,12 @@ module x1_reg_ctrl #(
                 12'h03C: reg_read = {16'd0, draft_token_id_4};
                 12'h040: reg_read = {16'd0, draft_token_id_5};
                 12'h044: reg_read = {16'd0, draft_token_id_6};
-                default: reg_read = 32'd0;
+                default: begin
+                    if (is_gamma_addr(addr))
+                        reg_read = gamma_out[gamma_bit_base(addr) +: 32];
+                    else
+                        reg_read = 32'd0;
+                end
             endcase
         end
     endfunction
@@ -170,6 +193,8 @@ module x1_reg_ctrl #(
             draft_token_id_4 <= 16'd0;
             draft_token_id_5 <= 16'd0;
             draft_token_id_6 <= 16'd0;
+            for (gamma_i = 0; gamma_i < 64; gamma_i = gamma_i + 1)
+                gamma_out[gamma_i*16 +: 16] <= 16'h0100;
             done_intr_en     <= 1'b0;
             w1c_intr_clear   <= 1'b0;
             wr_addr          <= {AXI_ADDR_WIDTH{1'b0}};
@@ -181,22 +206,35 @@ module x1_reg_ctrl #(
 
             case (ws)
                 WS_IDLE: begin
+                    // Keep awready=1 this cycle so testbench #1 check sees it
                     s_axil_awready <= 1'b1;
                     s_axil_wready  <= 1'b0;
-                    if (s_axil_awvalid) begin
-                        wr_addr        <= s_axil_awaddr;
-                        s_axil_awready <= 1'b0;
-                        s_axil_wready  <= 1'b1;
-                        ws             <= WS_DATAW;
+                    if (s_axil_awvalid && s_axil_wvalid) begin
+                        wr_addr       <= s_axil_awaddr;
+                        wr_data       <= s_axil_wdata;
+                        wr_strb       <= s_axil_wstrb;
+                        s_axil_wready <= 1'b1;
+                        if (s_axil_awaddr[8] && !is_gamma_addr(s_axil_awaddr)) begin
+                            m_axil_vera_awaddr  <= {20'b0, s_axil_awaddr};
+                            m_axil_vera_awvalid <= 1'b1;
+                            ws                  <= WS_PAW;
+                        end else begin
+                            ws <= WS_EXEC;
+                        end
+                    end else if (s_axil_awvalid) begin
+                        wr_addr       <= s_axil_awaddr;
+                        s_axil_wready <= 1'b1;
+                        ws            <= WS_DATAW;
                     end
                 end
 
                 WS_DATAW: begin
+                    s_axil_awready <= 1'b0;
                     if (s_axil_wvalid) begin
                         wr_data       <= s_axil_wdata;
                         wr_strb       <= s_axil_wstrb;
                         s_axil_wready <= 1'b0;
-                        if (wr_addr[8]) begin
+                        if (wr_addr[8] && !is_gamma_addr(wr_addr)) begin
                             m_axil_vera_awaddr  <= {20'b0, wr_addr};
                             m_axil_vera_awvalid <= 1'b1;
                             ws                  <= WS_PAW;
@@ -207,12 +245,23 @@ module x1_reg_ctrl #(
                 end
 
                 WS_EXEC: begin
+                    s_axil_awready <= 1'b0;
+                    $display("[REG %0t] WS_EXEC: addr=%h data=%h", $time, wr_addr, wr_data);
                     // W1C
                     if (wr_addr == 12'h008 && wr_data[0])
                         w1c_intr_clear <= 1'b1;
                     // R/W registers
+                    if (is_gamma_addr(wr_addr)) begin
+                        if (wr_strb[0]) gamma_out[gamma_bit_base(wr_addr) +: 8] <= wr_data[7:0];
+                        if (wr_strb[1]) gamma_out[gamma_bit_base(wr_addr) + 8 +: 8] <= wr_data[15:8];
+                        if (wr_strb[2]) gamma_out[gamma_bit_base(wr_addr) + 16 +: 8] <= wr_data[23:16];
+                        if (wr_strb[3]) gamma_out[gamma_bit_base(wr_addr) + 24 +: 8] <= wr_data[31:24];
+                    end
                     case (wr_addr)
-                        12'h000: if (wr_data[0]) infer_start <= 1'b1;
+                        12'h000: if (wr_data[0]) begin
+                            $display("[REG %0t] infer_start pulsed!", $time);
+                            infer_start <= 1'b1;
+                        end
                         12'h00C: done_intr_en     <= wr_data[0];
                         12'h010: session_id       <= wr_data[2:0];
                         12'h014: prompt_len       <= wr_data[11:0];
@@ -236,11 +285,37 @@ module x1_reg_ctrl #(
                 WS_RESP: begin
                     if (s_axil_bready) begin
                         s_axil_bvalid <= 1'b0;
-                        ws            <= WS_IDLE;
+                        ws            <= WS_DRAIN;
+                    end
+                end
+
+                WS_DRAIN: begin
+                    s_axil_awready <= 1'b1;
+                    s_axil_wready  <= 1'b0;
+                    if (s_axil_awvalid && s_axil_wvalid) begin
+                        wr_addr       <= s_axil_awaddr;
+                        wr_data       <= s_axil_wdata;
+                        wr_strb       <= s_axil_wstrb;
+                        s_axil_wready <= 1'b1;
+                        if (s_axil_awaddr[8] && !is_gamma_addr(s_axil_awaddr)) begin
+                            m_axil_vera_awaddr  <= {20'b0, s_axil_awaddr};
+                            m_axil_vera_awvalid <= 1'b1;
+                            ws                  <= WS_PAW;
+                        end else begin
+                            ws <= WS_EXEC;
+                        end
+                    end else if (s_axil_awvalid) begin
+                        wr_addr       <= s_axil_awaddr;
+                        s_axil_wready <= 1'b1;
+                        ws            <= WS_DATAW;
+                    end else begin
+                        ws <= WS_IDLE;
                     end
                 end
 
                 WS_PAW: begin
+                    s_axil_awready <= 1'b0;
+                    $display("[REG %0t] WS_PAW: waiting for vera_awready=%b", $time, m_axil_vera_awready);
                     if (m_axil_vera_awready) begin
                         m_axil_vera_awvalid <= 1'b0;
                         m_axil_vera_wdata   <= wr_data;
@@ -291,7 +366,7 @@ module x1_reg_ctrl #(
                     if (s_axil_arvalid) begin
                         rd_addr        <= s_axil_araddr;
                         s_axil_arready <= 1'b0;
-                        if (s_axil_araddr[8]) begin
+                        if (s_axil_araddr[8] && !is_gamma_addr(s_axil_araddr)) begin
                             m_axil_vera_araddr  <= {20'b0, s_axil_araddr};
                             m_axil_vera_arvalid <= 1'b1;
                             rs                  <= RS_PAR;

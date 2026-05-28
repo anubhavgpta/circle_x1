@@ -27,6 +27,9 @@ xelab.pb
 xsim*.jou
 xsim*.log
 
+# Simulation text output
+sim_output.txt
+
 # Build and temporary output
 build/
 dist/

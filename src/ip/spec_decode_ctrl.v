@@ -1,5 +1,6 @@
 // spec_decode_ctrl.v
 // Circle AIS -- speculative decode Q-vector buffer and replay controller.
+`timescale 1ns/1ps
 
 module spec_decode_ctrl #(
     parameter HEAD_DIM       = 64,
@@ -43,6 +44,7 @@ module spec_decode_ctrl #(
     reg [2:0] stream_batch;
     reg [5:0] stream_addr;
     reg [15:0] q_buf [0:((MAX_CANDIDATES + 1) * HEAD_DIM) - 1];
+    reg [7:0]  batch_done;  // bit i = 1 when all 64 elements of batch i received
 
     integer reset_idx;
 
@@ -60,6 +62,7 @@ module spec_decode_ctrl #(
             cand_done     <= 1'b0;
             spec_busy     <= 1'b0;
             spec_idle     <= 1'b1;
+            batch_done    <= 8'd0;
             for (reset_idx = 0; reset_idx < (MAX_CANDIDATES + 1) * HEAD_DIM; reset_idx = reset_idx + 1)
                 q_buf[reset_idx] <= 16'd0;
         end else begin
@@ -74,12 +77,19 @@ module spec_decode_ctrl #(
                     cand_batch_id <= 3'd0;
                     spec_idle     <= 1'b1;
 
+                    if (draft_q_valid) begin
+                        q_buf[(draft_batch_id * HEAD_DIM) + draft_q_addr] <= draft_q_data;
+                        if (draft_q_addr == HEAD_DIM - 1)
+                            batch_done[draft_batch_id] <= 1'b1;
+                    end
+
                     if (spec_start && !spec_busy) begin
                         k_reg        <= num_candidates;
                         stream_batch <= 3'd0;
                         stream_addr  <= 6'd0;
                         spec_busy    <= 1'b1;
                         spec_idle    <= 1'b0;
+                        batch_done   <= 8'd0;
                         state        <= RECV;
                     end
                 end
@@ -90,6 +100,9 @@ module spec_decode_ctrl #(
 
                     if (draft_q_valid) begin
                         q_buf[(draft_batch_id * HEAD_DIM) + draft_q_addr] <= draft_q_data;
+
+                        if (draft_q_addr == HEAD_DIM - 1)
+                            batch_done[draft_batch_id] <= 1'b1;
 
                         if ((draft_batch_id == k_reg) && (draft_q_addr == HEAD_DIM - 1)) begin
                             cand_count   <= k_reg + 3'd1;

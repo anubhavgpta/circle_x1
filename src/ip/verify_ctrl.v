@@ -1,5 +1,6 @@
 // verify_ctrl.v
 // Circle AIS -- verification controller for Kael parallel attention scoring.
+`timescale 1ns/1ps
 
 module verify_ctrl #(
     parameter HEAD_DIM  = 64,
@@ -13,6 +14,7 @@ module verify_ctrl #(
     input  wire [2:0]  session_id,
     input  wire [15:0] token_start,
     input  wire [15:0] token_end,
+    input  wire [15:0] token_pos,
     input  wire [2:0]  batch_size,
 
     // Q vector stream from spec_decode_ctrl
@@ -31,6 +33,7 @@ module verify_ctrl #(
     output reg  [2:0]  kael_session_id,
     output reg  [15:0] kael_token_start,
     output reg  [15:0] kael_token_end,
+    output reg  [15:0] kael_token_pos,
     output reg         attn_start,
 
     input  wire        attn_done,
@@ -71,6 +74,7 @@ module verify_ctrl #(
             kael_session_id  <= 3'd0;
             kael_token_start <= 16'd0;
             kael_token_end   <= 16'd0;
+            kael_token_pos   <= 16'd0;
             attn_start       <= 1'b0;
             vctx_out         <= 16'd0;
             vctx_batch_id    <= 3'd0;
@@ -113,6 +117,7 @@ module verify_ctrl #(
                         kael_session_id  <= session_id;
                         kael_token_start <= token_start;
                         kael_token_end   <= token_end;
+                        kael_token_pos   <= token_pos;
                         state            <= FIRE;
                     end
                 end
@@ -140,11 +145,13 @@ module verify_ctrl #(
                 end
 
                 DONE: begin
+                    $display("[VCTRL %0t] DONE: firing verify_done + vctx_valid pulse", $time);
                     q_valid       <= 1'b0;
                     vctx_out      <= 16'd0;
                     vctx_batch_id <= 3'd0;
-                    vctx_valid    <= 1'b0;
-                    vctx_last     <= 1'b0;
+                    // One-cycle pulse lets token_arbiter exit STREAM->COMPARE
+                    vctx_valid    <= 1'b1;
+                    vctx_last     <= 1'b1;
                     verify_done   <= 1'b1;
                     verify_busy   <= 1'b0;
                     state         <= IDLE;
