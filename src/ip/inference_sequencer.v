@@ -69,6 +69,9 @@ module inference_sequencer (
     input  wire        ctx_valid,
     input  wire        ctx_last,
 
+    // Sampler result for arbiter verification
+    input  wire [14:0] linear_logits,
+
     // Host outputs
     output reg  [15:0] generated_token,
     output reg         token_valid,
@@ -207,6 +210,7 @@ module inference_sequencer (
         .draft_token_id_5(draft_token_id_5),
         .draft_token_id_6(draft_token_id_6),
         .target_token_id (target_token_id),
+        .linear_logits   (linear_logits),
         .token_base_pos  (kv_tail),
         .accepted_count  (accepted_count),
         .next_token_id   (next_token_id),

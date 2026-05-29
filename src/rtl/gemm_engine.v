@@ -27,6 +27,13 @@ module gemm_engine #(
 
   reg [DATA_WIDTH-1:0]         b_ram     [0:HEAD_DIM-1][0:HEAD_DIM-1];
   reg [31:0]                   acc       [0:PE_ROWS-1][0:PE_COLS-1];
+
+  integer init_bri, init_brj;
+  initial begin
+    for (init_bri = 0; init_bri < HEAD_DIM; init_bri = init_bri + 1)
+      for (init_brj = 0; init_brj < HEAD_DIM; init_brj = init_brj + 1)
+        b_ram[init_bri][init_brj] = {DATA_WIDTH{1'b0}};
+  end
   reg [2:0]                    fold_cnt;
   reg [6:0]                    row_cnt;
   reg [5:0]                    col_base;

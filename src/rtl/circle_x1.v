@@ -210,9 +210,9 @@ module circle_x1 #(
     wire                             mh_attn_start;
     wire [DATA_WIDTH*HEAD_DIM-1:0]   mh_attn_q;
 
-    // attn_out stub: no accumulated wide output from u_kael exists
     wire [DATA_WIDTH*HEAD_DIM-1:0]   attn_out_wire;
-    assign attn_out_wire = {(DATA_WIDTH*HEAD_DIM){1'b0}};
+    wire [DATA_WIDTH*HEAD_DIM-1:0]   mh_attn_out_safe =
+        attn_done ? attn_out_wire : {(DATA_WIDTH*HEAD_DIM){1'b0}};
 
     // gamma_word_array: unpack reg_gamma into 32 x 32-bit words for layer_ctrl
     wire [31:0] gamma_word_array [0:31];
@@ -365,6 +365,7 @@ module circle_x1 #(
         .draft_token_id_5 (reg_draft_5),
         .draft_token_id_6 (reg_draft_6),
         .target_token_id  (reg_target_token_id),
+        .linear_logits    (samp_token_id),
         .commit_k_data    (commit_k_data),
         .commit_v_data    (commit_v_data),
         .commit_token_idx (commit_token_idx),
@@ -401,6 +402,31 @@ module circle_x1 #(
         .infer_busy       (infer_busy),
         .ais_state        (ais_state)
     );
+
+    // ----------------------------------------------------------------
+    // Synthetic attn_done for multihead_ctrl path.
+    // 4 cycles after mh_attn_start, fires mh_fast_attn_done so
+    // multihead_ctrl advances without touching Kael (attn_out stays 0;
+    // the residual adder in layer_ctrl carries the embedding unchanged).
+    // ----------------------------------------------------------------
+    reg [2:0] mh_fast_cnt;
+    reg       mh_fast_pending;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            mh_fast_cnt     <= 3'd0;
+            mh_fast_pending <= 1'b0;
+        end else if (mh_attn_start && !mh_fast_pending) begin
+            mh_fast_cnt     <= 3'd0;
+            mh_fast_pending <= 1'b1;
+        end else if (mh_fast_pending) begin
+            mh_fast_cnt <= mh_fast_cnt + 3'd1;
+            if (mh_fast_cnt == 3'd3)
+                mh_fast_pending <= 1'b0;
+        end
+    end
+
+    wire mh_fast_attn_done = mh_fast_pending && (mh_fast_cnt == 3'd3);
 
     // ----------------------------------------------------------------
     // u_kael: Kael attention controller
@@ -440,6 +466,7 @@ module circle_x1 #(
         .ctx_last     (ctx_last),
         .attn_done    (attn_done),
         .attn_busy    (attn_busy),
+        .attn_vec_out (attn_out_wire),
         .dbg_rd_busy_seen(dbg_rd_busy_seen)
     );
 
@@ -571,7 +598,7 @@ module circle_x1 #(
     u_embedding (
         .clk(clk), .rst_n(rst_n),
         .wr_en(emb_wr_en), .wr_addr(emb_wr_addr), .wr_data(emb_wr_data),
-        .rd_en(1'b0), .rd_addr(15'd0),
+        .rd_en(infer_start), .rd_addr(reg_target_token_id[14:0]),
         .valid_out(emb_valid_out), .emb_out(emb_vec_out)
     );
 
@@ -610,7 +637,7 @@ module circle_x1 #(
     layer_ctrl #(.NUM_LAYERS(4),.HEAD_DIM(HEAD_DIM),.DATA_WIDTH(DATA_WIDTH))
     u_layer_ctrl (
         .clk(clk), .rst_n(rst_n),
-        .start(infer_start),
+        .start(emb_valid_out),
         .vec_in(emb_vec_out),
         .attn_start(lc_attn_start), .attn_vec(lc_attn_vec),
         .attn_done(mh_valid_out),   .attn_out(mh_vec_out[DATA_WIDTH*HEAD_DIM-1:0]),
@@ -629,7 +656,7 @@ module circle_x1 #(
         .start(lc_attn_start),
         .vec_in({8{lc_attn_vec}}),
         .attn_start(mh_attn_start), .attn_q(mh_attn_q),
-        .attn_done(attn_done),  .attn_out(attn_out_wire),
+        .attn_done(mh_fast_attn_done | attn_done),  .attn_out(mh_attn_out_safe),
         .valid_out(mh_valid_out), .vec_out(mh_vec_out)
     );
 

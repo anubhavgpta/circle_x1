@@ -29,6 +29,7 @@ module attention_ctrl #(
     output logic [2:0]  ctx_batch_id,
     output logic        ctx_valid, ctx_last,
     output logic        attn_done, attn_busy,
+    output logic [DATA_WIDTH*HEAD_DIM-1:0] attn_vec_out,
     output logic        dbg_rd_busy_seen
 );
 
@@ -281,6 +282,7 @@ module attention_ctrl #(
             ctx_last <= 1'b0;
             attn_done <= 1'b0;
             attn_busy <= 1'b0;
+            attn_vec_out <= {(DATA_WIDTH*HEAD_DIM){1'b0}};
             out_batch <= {BATCH_BITS{1'b0}};
             out_idx <= {IDX_BITS{1'b0}};
             norm_batch <= {BATCH_BITS{1'b0}};
@@ -547,6 +549,8 @@ module attention_ctrl #(
                     rd_req <= 1'b0;
                     ctx_out <= norm_calc[15:0];
                     ctx_batch_id <= out_batch;
+                    if (out_batch == {BATCH_BITS{1'b0}})
+                        attn_vec_out[out_idx * DATA_WIDTH +: DATA_WIDTH] <= norm_calc[15:0];
                     ctx_valid <= 1'b1;
                     ctx_last <= ((out_batch == active_batch[BATCH_BITS-1:0] - 1'b1) &&
                                  (out_idx == HEAD_DIM[IDX_BITS-1:0] - 1'b1));

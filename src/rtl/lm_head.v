@@ -30,9 +30,17 @@ module lm_head #(
 
   reg [DATA_WIDTH-1:0] w_lm [0:VOCAB_SIZE-1][0:HEAD_DIM-1];
 
+  integer init_wi, init_wj;
+  initial begin
+    for (init_wi = 0; init_wi < VOCAB_SIZE; init_wi = init_wi + 1)
+      for (init_wj = 0; init_wj < HEAD_DIM; init_wj = init_wj + 1)
+        w_lm[init_wi][init_wj] = {DATA_WIDTH{1'b0}};
+  end
+
   reg [9:0]  tile_cnt;
   reg [6:0]  load_cnt;
   reg [3:0]  fold_cnt;
+  reg [3:0]  fold_cnt_q1;   // fold_cnt delayed 1 cycle -- fixes a_data sample alignment
   reg [2:0]  state;
   reg        compute_started;
 
@@ -65,11 +73,21 @@ module lm_head #(
       gemm_b_wr_data[pk*DATA_WIDTH +: DATA_WIDTH] = w_lm[curr_vocab_col][pk];
   end
 
+  // fold_cnt_q1: 1-cycle pipeline register so a_data is stable when gemm samples it.
+  // When gemm_engine transitions G_IDLE->G_LOAD on cycle T, the first a_valid arrives
+  // on cycle T+1. At that moment fold_cnt has already incremented, so using the raw
+  // fold_cnt would present fold=1 data in slot 0 and leave a_row_buf[7] unloaded (X).
+  // Using fold_cnt_q1 presents the fold=0 data at posedge T+1 as required.
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) fold_cnt_q1 <= 4'd0;
+    else        fold_cnt_q1 <= fold_cnt;
+  end
+
   always @(*) begin
     gemm_a_data = {(DATA_WIDTH*PE_COLS){1'b0}};
     for (pa = 0; pa < PE_COLS; pa = pa + 1)
       gemm_a_data[pa*DATA_WIDTH +: DATA_WIDTH] =
-        hidden_vec[((fold_cnt*PE_COLS)+pa)*DATA_WIDTH +: DATA_WIDTH];
+        hidden_vec[((fold_cnt_q1*PE_COLS)+pa)*DATA_WIDTH +: DATA_WIDTH];
   end
 
   gemm_engine #(
