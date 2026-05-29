@@ -43,7 +43,6 @@ module circle_x1_tb;
     logic        m_axis_token_tvalid;
     logic        m_axis_token_tready = 1'b0;
     logic        intr;
-    logic        dbg_rd_busy_seen;
     logic        tb_rd_busy_seen_reported = 1'b0;
     logic        tb_spec_reported = 1'b0;
 
@@ -82,12 +81,11 @@ module circle_x1_tb;
         .m_axis_token_tdata  (m_axis_token_tdata),
         .m_axis_token_tvalid (m_axis_token_tvalid),
         .m_axis_token_tready (m_axis_token_tready),
-        .intr                (intr),
-        .dbg_rd_busy_seen    (dbg_rd_busy_seen)
+        .intr                (intr)
     );
 
     always @(posedge clk) begin
-        if (dbg_rd_busy_seen && !tb_rd_busy_seen_reported) begin
+        if (dut.u_kael.rd_busy_seen && !tb_rd_busy_seen_reported) begin
             $display("[TB %0t] FETCH_KV: rd_busy_seen asserted", $time);
             tb_rd_busy_seen_reported <= 1'b1;
         end

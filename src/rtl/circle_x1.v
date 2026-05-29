@@ -56,9 +56,6 @@ module circle_x1 #(
     // Interrupt
     output wire        intr,
 
-    // Debug
-    output wire        dbg_rd_busy_seen,
-
     // DMA host interface
     input  wire                            dma_start,
     input  wire [31:0]                     dma_src_addr,
@@ -109,8 +106,8 @@ module circle_x1 #(
     wire        vera_wr_req;
     wire [2:0]  vera_wr_session_id;
     wire [15:0] vera_wr_token_pos;
-    wire [15:0] vera_wr_k_data;
-    wire [15:0] vera_wr_v_data;
+    wire [DATA_WIDTH*HEAD_DIM-1:0] vera_wr_k_data;
+    wire [DATA_WIDTH*HEAD_DIM-1:0] vera_wr_v_data;
 
     wire        ais_evict_valid;
     wire [7:0]  ais_evict_page_id;
@@ -150,8 +147,8 @@ module circle_x1 #(
     // ----------------------------------------------------------------
     // Internal wires: Vera (kv_cache_ctrl) outputs
     // ----------------------------------------------------------------
-    wire [15:0] vera_rd_k_data;
-    wire [15:0] vera_rd_v_data;
+    wire [DATA_WIDTH*HEAD_DIM-1:0] vera_rd_k_data;
+    wire [DATA_WIDTH*HEAD_DIM-1:0] vera_rd_v_data;
     wire        vera_rd_valid;
     wire        vera_rd_last;
     wire        vera_rd_busy;
@@ -311,8 +308,8 @@ module circle_x1 #(
     assign vera_wr_req        = infer_busy ? ais_wr_req        : (prefill_wr_req & !wr_ack);
     assign vera_wr_session_id = infer_busy ? ais_wr_session_id : prefill_wr_session_id;
     assign vera_wr_token_pos  = infer_busy ? ais_wr_token_pos  : prefill_wr_token_pos;
-    assign vera_wr_k_data     = infer_busy ? ais_wr_k_data     : prefill_wr_k_data;
-    assign vera_wr_v_data     = infer_busy ? ais_wr_v_data     : prefill_wr_v_data;
+    assign vera_wr_k_data     = infer_busy ? {{(HEAD_DIM-1)*DATA_WIDTH{1'b0}}, ais_wr_k_data}     : {{(HEAD_DIM-1)*DATA_WIDTH{1'b0}}, prefill_wr_k_data};
+    assign vera_wr_v_data     = infer_busy ? {{(HEAD_DIM-1)*DATA_WIDTH{1'b0}}, ais_wr_v_data}     : {{(HEAD_DIM-1)*DATA_WIDTH{1'b0}}, prefill_wr_v_data};
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -455,8 +452,8 @@ module circle_x1 #(
         .rd_session_id(kael_rd_session_id),
         .rd_token_start(kael_rd_token_start),
         .rd_token_end  (kael_rd_token_end),
-        .rd_k_data    (vera_rd_k_data),
-        .rd_v_data    (vera_rd_v_data),
+        .rd_k_data    (vera_rd_k_data[15:0]),
+        .rd_v_data    (vera_rd_v_data[15:0]),
         .rd_valid     (vera_rd_valid),
         .rd_last      (vera_rd_last),
         .rd_busy      (vera_rd_busy),
@@ -466,8 +463,7 @@ module circle_x1 #(
         .ctx_last     (ctx_last),
         .attn_done    (attn_done),
         .attn_busy    (attn_busy),
-        .attn_vec_out (attn_out_wire),
-        .dbg_rd_busy_seen(dbg_rd_busy_seen)
+        .attn_vec_out (attn_out_wire)
     );
 
     // ----------------------------------------------------------------

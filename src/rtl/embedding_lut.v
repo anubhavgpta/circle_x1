@@ -18,7 +18,7 @@ module embedding_lut #(
   output reg  [DATA_WIDTH*HEAD_DIM-1:0]  emb_out
 );
 
-  reg [DATA_WIDTH*HEAD_DIM-1:0] emb_ram [0:VOCAB_SIZE-1];
+  (* ram_style = "block" *) reg [DATA_WIDTH*HEAD_DIM-1:0] emb_ram [0:VOCAB_SIZE-1];
   reg [14:0] rd_addr_r;
   reg        rd_valid_r;
 

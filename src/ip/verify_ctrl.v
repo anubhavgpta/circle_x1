@@ -145,7 +145,6 @@ module verify_ctrl #(
                 end
 
                 DONE: begin
-                    $display("[VCTRL %0t] DONE: firing verify_done + vctx_valid pulse", $time);
                     q_valid       <= 1'b0;
                     vctx_out      <= 16'd0;
                     vctx_batch_id <= 3'd0;

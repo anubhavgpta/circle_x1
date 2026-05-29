@@ -25,7 +25,7 @@ module gemm_engine #(
   localparam G_FOLD   = 2'd2;
   localparam G_OUTPUT = 2'd3;
 
-  reg [DATA_WIDTH-1:0]         b_ram     [0:HEAD_DIM-1][0:HEAD_DIM-1];
+  (* ram_style = "distributed" *) reg [DATA_WIDTH-1:0] b_ram [0:HEAD_DIM-1][0:HEAD_DIM-1];
   reg [31:0]                   acc       [0:PE_ROWS-1][0:PE_COLS-1];
 
   integer init_bri, init_brj;

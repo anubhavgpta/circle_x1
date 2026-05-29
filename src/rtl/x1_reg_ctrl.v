@@ -246,7 +246,6 @@ module x1_reg_ctrl #(
 
                 WS_EXEC: begin
                     s_axil_awready <= 1'b0;
-                    $display("[REG %0t] WS_EXEC: addr=%h data=%h", $time, wr_addr, wr_data);
                     // W1C
                     if (wr_addr == 12'h008 && wr_data[0])
                         w1c_intr_clear <= 1'b1;
@@ -259,7 +258,6 @@ module x1_reg_ctrl #(
                     end
                     case (wr_addr)
                         12'h000: if (wr_data[0]) begin
-                            $display("[REG %0t] infer_start pulsed!", $time);
                             infer_start <= 1'b1;
                         end
                         12'h00C: done_intr_en     <= wr_data[0];
@@ -315,7 +313,6 @@ module x1_reg_ctrl #(
 
                 WS_PAW: begin
                     s_axil_awready <= 1'b0;
-                    $display("[REG %0t] WS_PAW: waiting for vera_awready=%b", $time, m_axil_vera_awready);
                     if (m_axil_vera_awready) begin
                         m_axil_vera_awvalid <= 1'b0;
                         m_axil_vera_wdata   <= wr_data;

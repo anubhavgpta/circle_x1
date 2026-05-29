@@ -28,7 +28,7 @@ module lm_head #(
   localparam LM_COMPUTE = 3'd2;
   localparam LM_OUTPUT  = 3'd3;
 
-  reg [DATA_WIDTH-1:0] w_lm [0:VOCAB_SIZE-1][0:HEAD_DIM-1];
+  (* ram_style = "block" *) reg [DATA_WIDTH-1:0] w_lm [0:VOCAB_SIZE-1][0:HEAD_DIM-1];
 
   integer init_wi, init_wj;
   initial begin

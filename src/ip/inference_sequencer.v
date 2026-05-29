@@ -292,7 +292,6 @@ module inference_sequencer (
                 end
 
                 S_PREFILL: begin
-                    $display("[SEQ %0t] PREFILL: firing spec_start/verify_start/arb_start, spec_k=%0d", $time, spec_k_reg);
                     spec_start   <= 1'b1;
                     verify_start <= 1'b1;
                     arb_start    <= 1'b1;
@@ -303,14 +302,12 @@ module inference_sequencer (
 
                 S_SPEC_DRAFT: begin
                     if (cand_done) begin
-                        $display("[SEQ %0t] cand_done seen, moving to S_VERIFY", $time);
                         ais_state <= S_VERIFY;
                     end
                 end
 
                 S_VERIFY: begin
                     if (verify_done) begin
-                        $display("[SEQ %0t] verify_done seen, moving to S_ARBITRATE", $time);
                         ais_state <= S_ARBITRATE;
                     end
                 end

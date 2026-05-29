@@ -29,8 +29,7 @@ module attention_ctrl #(
     output logic [2:0]  ctx_batch_id,
     output logic        ctx_valid, ctx_last,
     output logic        attn_done, attn_busy,
-    output logic [DATA_WIDTH*HEAD_DIM-1:0] attn_vec_out,
-    output logic        dbg_rd_busy_seen
+    output logic [DATA_WIDTH*HEAD_DIM-1:0] attn_vec_out
 );
 
     localparam BATCH_BITS = 3;
@@ -113,7 +112,6 @@ module attention_ctrl #(
     integer comb_j;
     integer seq_b;
 
-    assign dbg_rd_busy_seen = rd_busy_seen;
     assign dot_q_data     = norm_replay_data;
     assign dot_q_addr     = norm_replay_addr;
     assign dot_q_batch_id = norm_replay_batch;
@@ -439,10 +437,8 @@ module attention_ctrl #(
                     end
                     // BUG FIX 2: transition when rd_busy falls, not while it is still high
                     if (rd_busy_seen && !rd_busy) begin
-                        $display("[KAEL %0t] FETCH_KV->K_START: rd_busy_seen=%b rd_busy=%b cnt=%0d", $time, rd_busy_seen, rd_busy, fetch_timeout_cnt);
                         state <= K_START;
                     end else if (fetch_timeout_cnt >= 7'd64) begin
-                        $display("[KAEL %0t] FETCH_KV timeout: rd_busy_seen=%b rd_busy=%b", $time, rd_busy_seen, rd_busy);
                         rd_req    <= 1'b0;
                         attn_done <= 1'b1;
                         attn_busy <= 1'b0;
@@ -462,8 +458,6 @@ module attention_ctrl #(
                 end
 
                 STREAM: begin
-                    if (stream_timeout_cnt == 7'd0)
-                        $display("[KAEL %0t] STREAM entry: stream_done=%b any_stall=%b all_done=%b need_kstart=%b", $time, stream_done, any_stall, all_done, need_kstart);
                     attn_busy <= 1'b1;
                     rd_req <= 1'b0;
 
@@ -516,7 +510,6 @@ module attention_ctrl #(
                     end
 
                     if (stream_done && all_done) begin
-                        $display("[KAEL %0t] STREAM->OUTPUT", $time);
                         out_batch <= {BATCH_BITS{1'b0}};
                         out_idx <= {IDX_BITS{1'b0}};
                         state <= OUTPUT;
@@ -524,7 +517,6 @@ module attention_ctrl #(
                         if (rd_valid) begin
                             stream_timeout_cnt <= 10'd0;
                         end else if (stream_timeout_cnt >= 10'd64) begin
-                            $display("[KAEL %0t] STREAM timeout (no rd_valid)", $time);
                             attn_done <= 1'b1;
                             attn_busy <= 1'b0;
                             state     <= IDLE;
@@ -534,7 +526,6 @@ module attention_ctrl #(
                     end else begin
                         // safety: should not fire -- ctx_done set with stream_done
                         if (stream_timeout_cnt >= 10'd960) begin
-                            $display("[KAEL %0t] WARNING: STREAM safety timeout fired - all_done never asserted", $time);
                             attn_done <= 1'b1;
                             attn_busy <= 1'b0;
                             state     <= IDLE;
