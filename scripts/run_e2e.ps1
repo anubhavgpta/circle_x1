@@ -1,5 +1,19 @@
 Set-Location "C:\Users\Anubhav Gupta\Desktop\Projects\circle_x1"
 
+# Verify .mem files are accessible from project root
+$memFiles = @(
+    "src\rtl\rope_lut.mem",
+    "src\rtl\exp_lut.mem",
+    "src\rtl\rms_seed_lut.mem"
+)
+foreach ($f in $memFiles) {
+    if (-not (Test-Path $f)) {
+        Write-Host "ERROR: missing $f" -ForegroundColor Red
+        exit 1
+    }
+}
+Write-Host "MEM check: all .mem files present"
+
 $files = @(
     "src/ip/qk_dot_engine.v",
     "src/ip/softmax_engine.v",

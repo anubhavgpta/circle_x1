@@ -49,7 +49,7 @@ module softmax_engine #(
     logic [EXP_WIDTH-1:0] exp_lut [0:255];
 
     initial begin
-        $readmemh("rtl/exp_lut.mem", exp_lut);
+        $readmemh("src/rtl/exp_lut.mem", exp_lut);
     end
 
     // -------------------------------------------------------------------------

@@ -1,5 +1,19 @@
 Set-Location "C:\Users\Anubhav Gupta\Desktop\Projects\circle_x1"
 
+# Verify .mem files are accessible from project root
+$memFiles = @(
+    "src\rtl\rope_lut.mem",
+    "src\rtl\exp_lut.mem",
+    "src\rtl\rms_seed_lut.mem"
+)
+foreach ($f in $memFiles) {
+    if (-not (Test-Path $f)) {
+        Write-Host "ERROR: missing $f" -ForegroundColor Red
+        exit 1
+    }
+}
+Write-Host "MEM check: all .mem files present"
+
 $files = @(
     "src/ip/qk_dot_engine.v",
     "src/ip/softmax_engine.v",
@@ -24,6 +38,14 @@ $files = @(
     "src/rtl/x1_token_output.v",
     "src/rtl/rmsnorm_engine.v",
     "src/rtl/residual_adder.v",
+    "src/rtl/gemm_engine.v",
+    "src/rtl/ffn_engine.v",
+    "src/rtl/layer_ctrl.v",
+    "src/rtl/multihead_ctrl.v",
+    "src/rtl/embedding_lut.v",
+    "src/rtl/lm_head.v",
+    "src/rtl/sampling_engine.v",
+    "src/rtl/dma_engine.v",
     "src/rtl/x1_reg_ctrl.v",
     "src/rtl/circle_x1.v",
     "sim/circle_x1_tb.sv"

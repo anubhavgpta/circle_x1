@@ -18,7 +18,7 @@ module rope_unit #(
     localparam ROM_DEPTH  = 1024;           // 32 pairs x 16 pos x 2 (cos,sin)
 
     reg [15:0] rope_rom [0:ROM_DEPTH-1];
-    initial $readmemh("rope_lut.mem", rope_rom);
+    initial $readmemh("src/rtl/rope_lut.mem", rope_rom);
 
     // Clamp position to LUT range [0,15]
     wire [3:0] pos = (token_pos > 16'd15) ? 4'd15 : token_pos[3:0];

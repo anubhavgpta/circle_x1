@@ -32,7 +32,7 @@ module sampling_engine #(
   reg [31:0] total_next,cum_next;
 
   initial begin
-    $readmemh("exp_lut.mem", exp_lut);
+    $readmemh("src/rtl/exp_lut.mem", exp_lut);
   end
 
   always @(posedge clk or negedge rst_n) begin
